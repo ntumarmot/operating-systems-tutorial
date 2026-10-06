@@ -3,7 +3,15 @@ const { connect } = require('./cdp.js');
 (async () => {
   const c = await connect(process.argv[2]);
   const base = process.argv[3];
-  await c.navigate(base + '?noscroll#/', 1000);
+  const waitFor = async selector => {
+    for (let attempt = 0; attempt < 60; attempt++) {
+      if (await c.evaluate(`!!document.querySelector(${JSON.stringify(selector)})`)) return;
+      await new Promise(r => setTimeout(r, 250));
+    }
+    throw new Error('等待元件超時：' + selector);
+  };
+  await c.navigate(base + '?noscroll#/', 300);
+  await waitFor('#export-btn');
 
   const controls = await c.evaluate(`(function () {
     return {
@@ -14,7 +22,8 @@ const { connect } = require('./cdp.js');
     };
   })()`);
   if (controls.exportText !== '匯出進度' || controls.importText !== '匯入進度' || controls.live !== 'polite') {
-    throw new Error('備份控制項未正確載入：' + JSON.stringify(controls));
+    const page = await c.evaluate(`({ readyState: document.readyState, title: document.title, body: document.body.innerText.slice(0, 300), scripts: [...document.scripts].map(s => s.src) })`);
+    throw new Error('備份控制項未正確載入：' + JSON.stringify({ controls, page, errors: c.errors() }));
   }
 
   const exportResult = await c.evaluate(`(async function () {
@@ -62,7 +71,8 @@ const { connect } = require('./cdp.js');
   if (!invalidResult.includes('JSON')) throw new Error('錯誤檔案沒有顯示可恢復說明：' + invalidResult);
 
   await c.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
-  await c.navigate(base + '?desktop#/', 700);
+  await c.navigate(base + '?desktop#/', 300);
+  await waitFor('.progress-backup');
   await c.evaluate(`document.querySelector('.progress-backup').scrollIntoView({ block: 'center' })`);
   await c.screenshot('/tmp/os-review-backup-desktop.png');
   await c.evaluate(`(function () { localStorage.setItem('os_theme', 'light'); document.documentElement.setAttribute('data-theme', 'light'); })()`);
@@ -70,7 +80,8 @@ const { connect } = require('./cdp.js');
   await c.evaluate(`(function () { localStorage.setItem('os_theme', 'dark'); document.documentElement.setAttribute('data-theme', 'dark'); })()`);
 
   await c.send('Emulation.setDeviceMetricsOverride', { width: 375, height: 812, deviceScaleFactor: 1, mobile: true });
-  await c.navigate(base + '?mobile#/', 700);
+  await c.navigate(base + '?mobile#/', 300);
+  await waitFor('.progress-backup');
   const mobileLayout = await c.evaluate(`(function () {
     document.querySelector('.progress-backup').scrollIntoView({ block: 'center' });
     return { overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth, sidebarOpen: document.getElementById('sidebar').classList.contains('open') };
@@ -79,7 +90,8 @@ const { connect } = require('./cdp.js');
   await c.screenshot('/tmp/os-review-backup-mobile.png');
 
   await c.send('Emulation.setDeviceMetricsOverride', { width: 812, height: 375, deviceScaleFactor: 1, mobile: true });
-  await c.navigate(base + '?landscape#/', 700);
+  await c.navigate(base + '?landscape#/', 300);
+  await waitFor('.progress-backup');
   const landscapeOverflow = await c.evaluate(`document.documentElement.scrollWidth > document.documentElement.clientWidth`);
   if (landscapeOverflow) throw new Error('橫向行動版出現水平滾動。');
   const errs = c.errors();
