@@ -145,6 +145,102 @@ window.Storage = (function () {
   St.getInterview = () => get(KEYS.interview, { seen: {} });
   St.markInterviewSeen = id => { const s = St.getInterview(); s.seen[id] = (s.seen[id] || 0) + 1; set(KEYS.interview, s); };
 
+  // ---- 學習進度備份 ----
+  const BACKUP_KEYS = ['progress', 'answers', 'wrong', 'interview', 'last', 'trace'];
+  const isObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
+  const isCount = v => Number.isSafeInteger(v) && v >= 0;
+  const isTime = v => typeof v === 'number' && Number.isFinite(v) && v >= 0;
+  const isText = v => typeof v === 'string';
+  const isMap = (v, check) => isObject(v) && Object.entries(v).every(([k, x]) => isText(k) && check(x));
+  const put = (obj, key, value) => Object.defineProperty(obj, key, { enumerable: true, writable: true, configurable: true, value });
+
+  St.exportProgress = () => ({
+    format: 'os-review-progress',
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    data: {
+      progress: St.getProgress(),
+      answers: St.getAnswers(),
+      wrong: St.getWrong(),
+      interview: St.getInterview(),
+      last: St.getLast(),
+      trace: St.getTrace()
+    }
+  });
+
+  St.validateProgress = backup => {
+    if (!isObject(backup) || backup.format !== 'os-review-progress' || backup.version !== 1 || !isObject(backup.data)) {
+      throw new Error('檔案不是此網站支援的學習進度備份。');
+    }
+    const { progress, answers, wrong, interview, last, trace } = backup.data;
+    const chapters = new Map(CONTENT.chapters.map(ch => [ch.id, ch]));
+    const conceptKeys = new Set(CONTENT.chapters.flatMap(ch => ch.concepts.map(c => ch.id + '/' + c.id)));
+    const questions = new Map(Quiz.allQuestions().map(q => [q.id, q]));
+    const traceIds = new Set((window.TRACES || []).map(t => t.id));
+
+    if (!isObject(progress) || !isMap(progress.concepts, isTime) || !isMap(progress.chapters, isTime) ||
+        Object.keys(progress.concepts).some(k => !conceptKeys.has(k)) || Object.keys(progress.chapters).some(k => !chapters.has(k)) ||
+        !Array.isArray(answers) || answers.length > 5000 || !answers.every(a => isObject(a) && isText(a.qid) &&
+          typeof a.correct === 'boolean' && isText(a.concept) && isText(a.chapter) && isTime(a.ts) &&
+          isText(a.day) && /^\d{4}-\d{2}-\d{2}$/.test(a.day) && (a.topic == null || isText(a.topic)) && (a.type == null || isText(a.type))) ||
+        !isMap(wrong, w => isObject(w) && isText(w.qid) && isCount(w.wrongCount) && w.wrongCount > 0 &&
+          isCount(w.streak) && typeof w.mastered === 'boolean' && isTime(w.lastWrong) &&
+          isText(w.myAnswer) && w.myAnswer.length <= 20000) ||
+        !isObject(interview) || !isMap(interview.seen, isCount) ||
+        !isMap(trace, r => isObject(r) && isCount(r.tries) && isCount(r.correct) && r.correct <= r.tries && isTime(r.last))) {
+      throw new Error('備份內容不完整或格式錯誤，沒有匯入任何資料。');
+    }
+    if (Object.keys(trace).some(id => !traceIds.has(id))) {
+      throw new Error('備份含有目前題庫找不到的 Trace 紀錄，沒有匯入任何資料。');
+    }
+
+    const restoredProgress = { concepts: {}, chapters: {} };
+    Object.entries(progress.concepts).forEach(([k, v]) => put(restoredProgress.concepts, k, v));
+    Object.entries(progress.chapters).forEach(([k, v]) => put(restoredProgress.chapters, k, v));
+
+    // 題目、解析與正確答案改從目前題庫取得，不相信備份檔裡可能夾帶的 HTML。
+    const restoredWrong = {};
+    for (const [id, w] of Object.entries(wrong)) {
+      const q = questions.get(id);
+      if (id !== w.qid || !q) throw new Error('備份含有目前題庫找不到的錯題，沒有匯入任何資料。');
+      const correctAnswer = q.options ? q.options[q.answer] : (q.fields || []).map(f => `${f.label} = ${f.answer}`).join('，');
+      put(restoredWrong, id, {
+        qid: id, wrongCount: w.wrongCount, streak: w.streak, mastered: w.mastered,
+        lastWrong: w.lastWrong, myAnswer: w.myAnswer, correctAnswer,
+        question: q.q, explanation: q.explanation || '', concept: q.conceptName || q.concept || '',
+        conceptId: q.concept || '', chapter: q.chapterId || '', chapterTitle: q.chapterTitle || '',
+        topic: q.topic || '', type: q.type
+      });
+    }
+
+    let restoredLast = null;
+    if (last !== null) {
+      if (!isObject(last) || !isText(last.chId) || !isText(last.conceptId) || !isTime(last.ts)) {
+        throw new Error('備份的上次學習位置格式錯誤，沒有匯入任何資料。');
+      }
+      const ch = chapters.get(last.chId);
+      const concept = ch && ch.concepts.find(c => c.id === last.conceptId);
+      if (!ch || !concept) throw new Error('備份的上次學習位置已不存在，沒有匯入任何資料。');
+      restoredLast = { chId: ch.id, conceptId: concept.id, title: `Chapter ${ch.num} · ${concept.title}`, ts: last.ts };
+    }
+
+    const restoredTrace = {};
+    Object.entries(trace).forEach(([k, v]) => put(restoredTrace, k, { tries: v.tries, correct: v.correct, last: v.last }));
+    return { progress: restoredProgress, answers, wrong: restoredWrong, interview, last: restoredLast, trace: restoredTrace };
+  };
+
+  St.importProgress = backup => {
+    const values = St.validateProgress(backup);
+    const previous = Object.fromEntries(BACKUP_KEYS.map(name => [name, localStorage.getItem(KEYS[name])]));
+    try {
+      BACKUP_KEYS.forEach(name => localStorage.setItem(KEYS[name], JSON.stringify(values[name])));
+    } catch (e) {
+      BACKUP_KEYS.forEach(name => localStorage.removeItem(KEYS[name]));
+      BACKUP_KEYS.forEach(name => { if (previous[name] !== null) localStorage.setItem(KEYS[name], previous[name]); });
+      throw new Error('瀏覽器無法儲存匯入資料，原有進度已保留。');
+    }
+  };
+
   // ---- 重設 ----
   St.resetAll = () => { Object.values(KEYS).forEach(k => { if (k !== KEYS.theme) localStorage.removeItem(k); }); };
 

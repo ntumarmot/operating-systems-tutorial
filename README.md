@@ -1,7 +1,7 @@
 # OS Review｜作業系統互動複習網站
 
 純前端（HTML / CSS / JavaScript）的作業系統互動學習系統。無後端、無框架、無需安裝套件；KaTeX 已放在 `vendor/`，**離線可用**。
-所有學習進度（已完成概念、答題紀錄、錯題本、上次學習位置、Trace 紀錄）存在瀏覽器的 `localStorage`。
+所有學習進度（已完成概念、答題紀錄、錯題本、上次學習位置、Trace 紀錄）存在瀏覽器的 `localStorage`，可在 Dashboard 匯出或匯入 JSON 備份檔。
 
 ## 如何在本機啟動
 

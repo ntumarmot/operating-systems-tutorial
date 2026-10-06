@@ -91,8 +91,57 @@
 
       <div class="section-title"><h3>章節</h3></div>
       <div class="chapter-list">${CONTENT.chapters.map(ch => { const p = Storage.chapterProgress(ch.id); return `<a class="chapter-card" href="#/ch/${ch.id}"><div class="ch-num">Chapter ${ch.num}</div><div class="ch-title">${ch.title}</div><div class="progress-bar"><div class="progress-fill" style="width:${p.pct}%"></div></div><div class="ch-meta"><span>${ch.concepts.length} 個概念</span><span>${p.pct === 100 ? '✓ 完成' : p.pct + '%'}</span></div></a>`; }).join('')}</div>
-      <div style="margin-top:32px;font-size:.8rem;color:var(--text-3)">所有進度保存在此瀏覽器的 localStorage。<button class="btn btn-ghost btn-sm" id="reset-btn">重設所有進度</button></div>`;
-    $('#reset-btn').addEventListener('click', () => { if (confirm('確定要清除所有進度、答題紀錄與錯題本嗎？')) { Storage.resetAll(); renderNav(); renderDashboard(); } });
+      <div class="progress-backup card">
+        <h3>學習進度備份</h3>
+        <p>進度只保存在目前瀏覽器。匯出 JSON 檔後，可以在其他瀏覽器匯入；匯入會覆蓋目前的學習進度，但不會改變深淺色主題。</p>
+        <div class="btn-row">
+          <button class="btn" id="export-btn" type="button">匯出進度</button>
+          <button class="btn" id="import-btn" type="button">匯入進度</button>
+          <button class="btn btn-ghost" id="reset-btn" type="button">重設所有進度</button>
+        </div>
+        <input id="import-file" type="file" accept=".json,application/json" hidden>
+        <p class="backup-status" id="backup-status" role="status" aria-live="polite" aria-atomic="true"></p>
+      </div>`;
+    const setBackupStatus = (message, kind = '') => {
+      const status = $('#backup-status');
+      status.className = 'backup-status' + (kind ? ' ' + kind : '');
+      status.textContent = message;
+    };
+    $('#export-btn').addEventListener('click', () => {
+      try {
+        const blob = new Blob([JSON.stringify(Storage.exportProgress(), null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'os-review-progress-' + new Date().toLocaleDateString('sv-SE') + '.json';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        setBackupStatus('已建立進度備份檔。', 'success');
+      } catch (e) { setBackupStatus('匯出失敗：' + e.message, 'error'); }
+    });
+    $('#import-btn').addEventListener('click', () => $('#import-file').click());
+    $('#import-file').addEventListener('change', async e => {
+      const file = e.target.files[0];
+      e.target.value = '';
+      if (!file) return;
+      const isJson = file.type === 'application/json' || file.name.toLowerCase().endsWith('.json');
+      if (!isJson) { setBackupStatus('請選擇 JSON 格式的進度備份檔。', 'error'); return; }
+      if (file.size > 10 * 1024 * 1024) { setBackupStatus('檔案超過 10 MB，無法匯入。', 'error'); return; }
+      try {
+        const backup = JSON.parse(await file.text());
+        Storage.validateProgress(backup);
+        if (!confirm('匯入會覆蓋目前的概念進度、答題紀錄、錯題本、面試、閱讀位置與 Trace 紀錄。確定要繼續嗎？')) {
+          setBackupStatus('已取消匯入，目前進度沒有改變。');
+          return;
+        }
+        Storage.importProgress(backup);
+        renderNav(); renderDashboard();
+        setBackupStatus('匯入完成，頁面已更新。', 'success');
+      } catch (err) { setBackupStatus('匯入失敗：' + err.message, 'error'); }
+    });
+    $('#reset-btn').addEventListener('click', () => { if (confirm('確定要清除所有學習進度、答題紀錄、錯題本、面試與 Trace 紀錄嗎？')) { Storage.resetAll(); renderNav(); renderDashboard(); } });
   }
   function nextChapter() { return CONTENT.chapters.find(ch => Storage.chapterProgress(ch.id).pct < 100) || CONTENT.chapters[0]; }
 
@@ -181,8 +230,8 @@
       el.innerHTML = `
         <div class="wrong-meta"><span class="pill">${w.chapterTitle || w.chapter}</span><span class="pill">${w.concept}</span><span class="pill">${Quiz.TYPES[w.type] || w.type || ''}</span><span class="pill w">錯 ${w.wrongCount} 次</span><span class="pill ${w.mastered ? 'm' : ''}">${w.mastered ? '已掌握' : '連續答對 ' + (w.streak || 0) + '/2'}</span></div>
         <div class="wrong-q">${w.question}</div>
-        <div class="wrong-row"><span class="lbl">我的答案</span><span style="color:var(--danger)">${w.myAnswer}</span></div>
-        <div class="wrong-row"><span class="lbl">正確答案</span><span style="color:var(--success)">${w.correctAnswer}</span></div>
+        <div class="wrong-row"><span class="lbl">我的答案</span><span style="color:var(--danger)">${Util.esc(w.myAnswer)}</span></div>
+        <div class="wrong-row"><span class="lbl">正確答案</span><span style="color:var(--success)">${Util.esc(w.correctAnswer)}</span></div>
         <div class="wrong-row"><span class="lbl">解釋</span><span>${w.explanation}</span></div>
         <div class="btn-row"><button class="btn btn-sm retry-btn">重新作答</button><a class="btn btn-sm btn-ghost" href="#/ch/${w.chapter}/${w.conceptId}">回到概念</a><button class="btn btn-sm btn-ghost del-btn">移除</button></div>
         <div class="retry-slot"></div>`;
